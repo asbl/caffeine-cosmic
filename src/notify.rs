@@ -39,9 +39,9 @@ pub fn notify_enabled() {
     show_notification(&title, &body, Urgency::Low, 3000);
 }
 
-pub fn notify_enabled_with_time(remaining: &str) {
+pub fn notify_enabled_with_time(mins: u64) {
     let title = fl!("notification-enabled-title");
-    let body = format!("{} - {}", fl!("notification-enabled-body"), remaining);
+    let body = fl!("notification-enabled-timed-body", mins = (mins as f64));
     show_notification(&title, &body, Urgency::Low, 3000);
 }
 
@@ -59,12 +59,7 @@ pub fn notify_timer_expired() {
 
 pub fn notify_warning(remaining_mins: u32) {
     let title = fl!("notification-warning-title");
-    let body = format!(
-        "{} {} {}",
-        fl!("notification-warning-body"),
-        remaining_mins,
-        fl!("notification-minutes-left")
-    );
+    let body = fl!("notification-warning-body", mins = remaining_mins);
     show_notification(&title, &body, Urgency::Normal, 5000);
 }
 

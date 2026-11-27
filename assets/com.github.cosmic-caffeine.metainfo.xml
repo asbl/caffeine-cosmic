@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.cosmic-caffeine</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Caffeine</name>
+  <summary>Keep your screen or system awake from the COSMIC panel</summary>
+  <summary xml:lang="de">Bildschirm oder System über das COSMIC-Panel wach halten</summary>
+  <developer id="io.github.oussama-berchi">
+    <name>Oussama Berchi</name>
+  </developer>
+  <description>
+    <p>Caffeine is a COSMIC panel applet that prevents the screen from going idle,
+      blocks system suspend, or does both. Set a timer or keep the inhibition
+      active until you turn it off.</p>
+    <p xml:lang="de">Caffeine ist ein Applet für das COSMIC-Panel. Es hält den
+      Bildschirm wach, verhindert den Ruhezustand des Systems oder beides.
+      Die Sperre lässt sich für eine feste Dauer oder unbegrenzt einschalten.</p>
+  </description>
+  <url type="homepage">https://github.com/Oussamaberchi/caffeine-cosmic</url>
+  <url type="bugtracker">https://github.com/Oussamaberchi/caffeine-cosmic/issues</url>
+  <launchable type="desktop-id">com.github.cosmic-caffeine.desktop</launchable>
+  <provides>
+    <id>com.system76.CosmicApplet</id>
+  </provides>
+  <releases>
+    <release version="1.2.0" date="2026-04-15" />
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

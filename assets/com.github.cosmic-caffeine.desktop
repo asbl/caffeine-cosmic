@@ -1,14 +1,15 @@
 [Desktop Entry]
 Name=Caffeine
-GenericName=Screen Sleep Preventer
+GenericName=Sleep Inhibitor
+GenericName[de]=Wachhalte-Applet
 Comment=Prevent screen sleep, display timeout, and system suspend
 Comment[fr]=Empêcher la mise en veille de l'écran et la suspension du système
-Comment[de]=Bildschirm-Ruhezustand und Suspendieren des Systems verhindern
+Comment[de]=Bildschirm wach halten und Ruhezustand verhindern
 Type=Application
 Exec=cosmic-caffeine
 Terminal=false
-Categories=COSMIC;System;Monitor;PowerManagement;
-Keywords=COSMIC;caffeine;sleep;power;inhibit;awake;screen;display;timeout;suspend;popos;pop_os;desktop;applet;panel;
+Categories=COSMIC;System;Monitor;
+Keywords=COSMIC;sleep;power;inhibit;awake;screen;display;timeout;suspend;popos;pop_os;desktop;applet;panel;
 Icon=oussama-berchi-caffeine-cosmic
 StartupNotify=true
 NoDisplay=true

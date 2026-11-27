@@ -6,16 +6,20 @@ prefix := "/usr"
 bin_dir := prefix / "bin"
 share_dir := prefix / "share"
 applications_dir := share_dir / "applications"
+metainfo_dir := share_dir / "metainfo"
 icons_dir := share_dir / "icons/hicolor/scalable/apps"
 
 # Local user installation paths
 local_bin := env_var("HOME") / ".local/bin"
-local_apps := env_var("HOME") / ".local/share/applications"
-local_icons := env_var("HOME") / ".local/share/icons/hicolor/scalable/apps"
+local_share := env_var_or_default("XDG_DATA_HOME", env_var("HOME") / ".local/share")
+local_apps := local_share / "applications"
+local_metainfo := local_share / "metainfo"
+local_icons := local_share / "icons/hicolor/scalable/apps"
 
 # Application metadata
 app_name := "cosmic-caffeine"
 desktop_file := "com.github.cosmic-caffeine.desktop"
+metainfo_file := "com.github.cosmic-caffeine.metainfo.xml"
 icon_file := "oussama-berchi-caffeine-cosmic.svg"
 
 # Default recipe - show help
@@ -44,6 +48,7 @@ install: build
     sudo install -Dm755 target/release/{{app_name}} {{bin_dir}}/{{app_name}}
     @echo "Installing desktop entry to {{applications_dir}}/{{desktop_file}}..."
     sudo install -Dm644 assets/{{desktop_file}} {{applications_dir}}/{{desktop_file}}
+    sudo install -Dm644 assets/{{metainfo_file}} {{metainfo_dir}}/{{metainfo_file}}
     @echo "Installing icon to {{icons_dir}}/{{icon_file}}..."
     sudo install -Dm644 assets/{{icon_file}} {{icons_dir}}/{{icon_file}}
     @echo ""
@@ -65,17 +70,18 @@ install-local: build
     @echo "Installing cosmic-caffeine to user directories..."
     @echo "=================================================="
     @echo ""
-    @mkdir -p {{local_bin}}
+    @mkdir -p "{{local_bin}}"
     @echo "Installing binary to {{local_bin}}/{{app_name}}..."
-    install -Dm755 target/release/{{app_name}} {{local_bin}}/{{app_name}}
-    @mkdir -p {{local_apps}}
+    install -Dm755 target/release/{{app_name}} "{{local_bin}}/{{app_name}}"
+    @mkdir -p "{{local_apps}}"
     @echo "Installing desktop entry to {{local_apps}}/{{desktop_file}}..."
-    install -Dm644 assets/{{desktop_file}} {{local_apps}}/{{desktop_file}}
+    install -Dm644 assets/{{desktop_file}} "{{local_apps}}/{{desktop_file}}"
+    install -Dm644 assets/{{metainfo_file}} "{{local_metainfo}}/{{metainfo_file}}"
     @echo ""
-    install -Dm644 assets/{{icon_file}} {{local_icons}}/{{icon_file}}
+    install -Dm644 assets/{{icon_file}} "{{local_icons}}/{{icon_file}}"
     @echo ""
     @echo "Updating desktop database..."
-    -update-desktop-database {{local_apps}} 2>/dev/null || true
+    -update-desktop-database "{{local_apps}}" 2>/dev/null || true
     @echo ""
     @echo "=================================================="
     @echo "Installation complete!"
@@ -97,6 +103,7 @@ uninstall:
     -sudo rm -f {{bin_dir}}/{{app_name}}
     @echo "Removing desktop entry..."
     -sudo rm -f {{applications_dir}}/{{desktop_file}}
+    -sudo rm -f {{metainfo_dir}}/{{metainfo_file}}
     @echo "Removing icon..."
     -sudo rm -f {{icons_dir}}/{{icon_file}}
     @echo ""
@@ -115,11 +122,12 @@ uninstall-local:
     @echo "======================================================"
     @echo ""
     @echo "Removing binary..."
-    -rm -f {{local_bin}}/{{app_name}}
+    -rm -f "{{local_bin}}/{{app_name}}"
     @echo "Removing desktop entry..."
-    -rm -f {{local_apps}}/{{desktop_file}}
+    -rm -f "{{local_apps}}/{{desktop_file}}"
+    -rm -f "{{local_metainfo}}/{{metainfo_file}}"
     @echo "Removing icon..."
-    -rm -f {{local_icons}}/{{icon_file}}
+    -rm -f "{{local_icons}}/{{icon_file}}"
     @echo ""
     @echo "======================================================"
     @echo "Uninstallation complete!"

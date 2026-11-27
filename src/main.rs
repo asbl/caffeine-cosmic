@@ -14,14 +14,11 @@ fn main() -> cosmic::iced::Result {
         )
         .init();
 
-    if !is_cosmic_session() {
-        eprintln!(
-            "Warning: This applet is designed specifically for the COSMIC Desktop Environment."
-        );
-        eprintln!("It may not function correctly in other environments.");
-    }
-
     i18n::init();
+
+    if !is_cosmic_session() {
+        eprintln!("{}", fl!("env-warning"));
+    }
 
     cosmic::applet::run::<app::AppModel>(())
 }

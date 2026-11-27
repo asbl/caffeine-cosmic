@@ -35,3 +35,29 @@ pub fn init() {
         tracing::warn!("Failed to select language: {}", e);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn german_locale_formats_timer_labels_and_notification_plurals() {
+        let loader = fluent_language_loader!();
+        let localizer = DefaultLocalizer::new(&loader, &Localizations);
+        localizer.select(&["de-DE".parse().unwrap()]).unwrap();
+
+        assert_eq!(loader.get("timer-manual"), "Eigene Dauer");
+        assert_eq!(loader.get("timer-hours-label"), "Stunden");
+        assert_eq!(
+            loader.get_args("notification-warning-body", HashMap::from([("mins", 1)])),
+            "Noch eine Minute."
+        );
+        assert_eq!(
+            loader
+                .get_args("notification-warning-body", HashMap::from([("mins", 2)]))
+                .replace(['\u{2068}', '\u{2069}'], ""),
+            "Noch 2 Minuten."
+        );
+    }
+}

@@ -1,3 +1,4 @@
+use crate::fl;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zbus::zvariant::Type;
@@ -17,21 +18,25 @@ pub enum TimerSelection {
 }
 
 impl TimerSelection {
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            TimerSelection::Infinity => "Infinity",
-            TimerSelection::FiveMins => "5 Minutes",
-            TimerSelection::TenMins => "10 Minutes",
-            TimerSelection::ThirtyMins => "30 Minutes",
-            TimerSelection::OneHour => "1 Hour",
-            TimerSelection::TwoHours => "2 Hours",
-            TimerSelection::ThreeHours => "3 Hours",
-            TimerSelection::FourHours => "4 Hours",
-            TimerSelection::Manual => "Manual",
+            TimerSelection::Infinity => fl!("timer-infinity"),
+            TimerSelection::FiveMins => fl!("timer-five-mins"),
+            TimerSelection::TenMins => fl!("timer-ten-mins"),
+            TimerSelection::ThirtyMins => fl!("timer-thirty-mins"),
+            TimerSelection::OneHour => fl!("timer-one-hour"),
+            TimerSelection::TwoHours => fl!("timer-two-hours"),
+            TimerSelection::ThreeHours => fl!("timer-three-hours"),
+            TimerSelection::FourHours => fl!("timer-four-hours"),
+            TimerSelection::Manual => fl!("timer-manual"),
         }
     }
 
-    pub fn duration_secs(&self, manual_mins: Option<u64>, manual_hours: Option<u64>) -> Option<u64> {
+    pub fn duration_secs(
+        &self,
+        manual_mins: Option<u64>,
+        manual_hours: Option<u64>,
+    ) -> Option<u64> {
         let total_mins = manual_mins.unwrap_or(0) + (manual_hours.unwrap_or(0) * 60);
         match self {
             TimerSelection::Infinity => None,
@@ -103,22 +108,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn timer_selection_label_returns_correct_labels() {
-        assert_eq!(TimerSelection::Infinity.label(), "Infinity");
-        assert_eq!(TimerSelection::OneHour.label(), "1 Hour");
-        assert_eq!(TimerSelection::TwoHours.label(), "2 Hours");
-        assert_eq!(TimerSelection::Manual.label(), "Manual");
-    }
-
-    #[test]
     fn timer_selection_duration_secs() {
         assert_eq!(TimerSelection::Infinity.duration_secs(None, None), None);
-        assert_eq!(TimerSelection::FiveMins.duration_secs(None, None), Some(300));
-        assert_eq!(TimerSelection::OneHour.duration_secs(None, None), Some(3600));
-        assert_eq!(TimerSelection::TwoHours.duration_secs(None, None), Some(7200));
-        assert_eq!(TimerSelection::Manual.duration_secs(Some(30), None), Some(1800));
-        assert_eq!(TimerSelection::Manual.duration_secs(Some(60), None), Some(3600));
-        assert_eq!(TimerSelection::Manual.duration_secs(Some(30), Some(1)), Some(5400));
+        assert_eq!(
+            TimerSelection::FiveMins.duration_secs(None, None),
+            Some(300)
+        );
+        assert_eq!(
+            TimerSelection::OneHour.duration_secs(None, None),
+            Some(3600)
+        );
+        assert_eq!(
+            TimerSelection::TwoHours.duration_secs(None, None),
+            Some(7200)
+        );
+        assert_eq!(
+            TimerSelection::Manual.duration_secs(Some(30), None),
+            Some(1800)
+        );
+        assert_eq!(
+            TimerSelection::Manual.duration_secs(Some(60), None),
+            Some(3600)
+        );
+        assert_eq!(
+            TimerSelection::Manual.duration_secs(Some(30), Some(1)),
+            Some(5400)
+        );
     }
 
     #[test]

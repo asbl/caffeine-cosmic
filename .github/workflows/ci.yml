@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y appstream desktop-file-utils libssl-dev libwayland-dev libxkbcommon-dev pkg-config
+      - name: Install Rust
+        run: rustup update stable && rustup default stable && rustup component add rustfmt clippy
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Validate applet metadata
+        run: |
+          desktop-file-validate assets/com.github.cosmic-caffeine.desktop
+          appstreamcli validate --no-net assets/com.github.cosmic-caffeine.metainfo.xml
+      - name: Check with Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run tests
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --locked

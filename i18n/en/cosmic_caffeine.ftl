@@ -1,14 +1,10 @@
-# Cosmic Caffeine - English translations
-
-# Popup header
 caffeine-mode = Caffeine Mode
-
-# Status messages
 status-off = Caffeine is off
-status-remaining = { $mode } - { $time } remaining
+status-remaining = { $mode } · { $time } remaining
 status-active = { $mode } mode active
+tooltip-active = Active
+tooltip-inactive = Inactive
 
-# Timer options
 timer-infinity = Infinity
 timer-five-mins = 5 Minutes
 timer-ten-mins = 10 Minutes
@@ -18,35 +14,36 @@ timer-two-hours = 2 Hours
 timer-three-hours = 3 Hours
 timer-four-hours = 4 Hours
 timer-manual = Custom
+timer-hours-label = Hours
+timer-minutes-label = Minutes
 
-# Inhibit mode
-inhibit-mode = Inhibit Mode:
+inhibit-mode = Inhibit Mode
 inhibit-idle = Idle
 inhibit-suspend = Suspend
 inhibit-both = Both
-
-# Buttons
 start-caffeine = Enable
 stop-caffeine = Disable
-close-popup = Close
 
-# Time formatting
 time-hours-minutes = { $hours }h { $mins }m
 time-minutes = { $mins }m
 time-seconds = { $secs }s
 
-# Notifications
 notification-enabled-title = Caffeine Mode Activated
-notification-enabled-body = Your screen will stay awake.
+notification-enabled-body = Caffeine is active until you turn it off.
+notification-enabled-timed-body = { $mins ->
+    [one] Caffeine is active for one minute.
+   *[other] Caffeine is active for { $mins } minutes.
+    }
 notification-disabled-title = Caffeine Mode Deactivated
 notification-disabled-body = Normal power settings restored.
 notification-timer-expired-title = Caffeine Timer Expired
 notification-timer-expired-body = Normal power settings have been restored.
 notification-warning-title = Caffeine Timer Warning
-notification-warning-body = Only
-notification-minutes-left = minutes remaining!
+notification-warning-body = { $mins ->
+    [one] One minute remaining.
+   *[other] { $mins } minutes remaining.
+    }
 notification-error-title = Caffeine Error
-notification-error-body = Could not toggle Caffeine Mode.
+notification-error-body = Could not turn on Caffeine.
 
-# Environment warning
-env-warning = This applet is designed specifically for the COSMIC Desktop Environment.
+env-warning = This applet is designed for COSMIC and may work differently on other desktops.

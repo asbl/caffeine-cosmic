@@ -6,11 +6,10 @@ use cosmic::theme;
 use cosmic::widget;
 use cosmic::widget::MouseArea;
 use std::rc::Rc;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::LazyLock;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-use crate::backend::CaffeineBackend;
 use crate::config::{CaffeineConfig, InhibitMode};
 use crate::fl;
 use crate::service::{CaffeineManagerProxy, CaffeineService, DBUS_NAME, DBUS_PATH};
@@ -32,6 +31,7 @@ pub struct AppModel {
     manual_input: String,
     manual_hours_input: String,
     caffeine_state: CaffeineState,
+    timer_duration: u64,
     popup: Option<Id>,
     proxy: Option<CaffeineManagerProxy<'static>>,
     active_icon_style: cosmic::theme::Svg,
@@ -52,7 +52,7 @@ pub enum Message {
     Surface(cosmic::surface::Action),
     Hover(bool),
     DBusReady(Option<CaffeineManagerProxy<'static>>),
-    StateChanged(CaffeineState),
+    StateChanged((CaffeineState, u64)),
     SetInhibitMode(InhibitMode),
     Noop,
 }
@@ -95,6 +95,7 @@ impl cosmic::Application for AppModel {
             manual_input: config.manual_mins.to_string(),
             manual_hours_input: config.manual_hours.to_string(),
             caffeine_state: CaffeineState::inactive(),
+            timer_duration: 0,
             popup: None,
             proxy: None,
             active_icon_style: active_style,
@@ -114,8 +115,7 @@ impl cosmic::Application for AppModel {
 
                 // Every instance serves the object and queues for the name, so
                 // the bus promotes the next one when the current owner exits.
-                let state = Arc::new(Mutex::new(CaffeineState::inactive()));
-                let service = CaffeineService::new(CaffeineBackend::new(), state);
+                let service = CaffeineService::new();
                 if let Err(e) = conn.object_server().at(DBUS_PATH, service).await {
                     error!("Failed to serve object: {}", e);
                     return None;
@@ -233,23 +233,7 @@ impl cosmic::Application for AppModel {
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::DBusReady(proxy) => {
-                if let Some(proxy) = proxy {
-                    info!("D-Bus proxy ready");
-                    self.proxy = Some(proxy.clone());
-
-                    return Task::perform(
-                        async move {
-                            match proxy.get_state().await {
-                                Ok(state) => Message::StateChanged(state),
-                                Err(e) => {
-                                    error!("Failed to get initial state: {}", e);
-                                    Message::Noop
-                                }
-                            }
-                        },
-                        cosmic::Action::App,
-                    );
-                }
+                self.proxy = proxy;
             }
 
             Message::SelectTimer(selection) => {
@@ -310,9 +294,10 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::StateChanged(new_state) => {
+            Message::StateChanged((new_state, duration)) => {
                 info!("State synced from D-Bus: {:?}", new_state);
                 self.caffeine_state = new_state;
+                self.timer_duration = duration;
             }
 
             // Only redraws the remaining time; the service handles expiry.
@@ -372,7 +357,7 @@ impl cosmic::Application for AppModel {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        let timer = if self.caffeine_state.is_active() {
+        let timer = if self.caffeine_state.remaining_secs().is_some() {
             Subscription::run_with_id(
                 "caffeine-timer",
                 stream::unfold((), |()| async {
@@ -384,22 +369,54 @@ impl cosmic::Application for AppModel {
             Subscription::none()
         };
 
-        // After a handover the new owner starts inactive: fetch its state.
-        let owner_changes = if let Some(proxy) = &self.proxy {
+        let dbus = if let Some(proxy) = &self.proxy {
             let proxy = proxy.clone();
             Subscription::run_with_id(
-                "dbus-owner",
+                "dbus-state",
                 stream::once(async move {
-                    match proxy.inner().receive_owner_changed().await {
-                        Ok(changes) => changes
-                            .filter_map(move |_| {
+                    let changes = proxy.inner().receive_signal("StateChanged").await;
+                    let owners = proxy.inner().receive_owner_changed().await;
+                    match (changes, owners) {
+                        (Ok(changes), Ok(owners)) => stream::once(async {})
+                            .chain(stream::select(changes.map(|_| ()), owners.map(|_| ())))
+                            .then(move |()| {
                                 let proxy = proxy.clone();
-                                async move { proxy.get_state().await.ok() }
+                                async move {
+                                    match proxy.get_timer_state().await {
+                                        Ok(state) => Some(Message::StateChanged(state)),
+                                        // Older applets still use the original D-Bus methods.
+                                        Err(zbus::Error::MethodError(name, _, _))
+                                            if name.as_str()
+                                                == "org.freedesktop.DBus.Error.UnknownMethod" =>
+                                        {
+                                            proxy.get_state().await.ok().map(|state| {
+                                                let duration =
+                                                    if state.selection == TimerSelection::Manual {
+                                                        0
+                                                    } else {
+                                                        state
+                                                            .selection
+                                                            .duration_secs(None, None)
+                                                            .unwrap_or(0)
+                                                    };
+                                                Message::StateChanged((state, duration))
+                                            })
+                                        }
+                                        Err(e) => {
+                                            warn!("Failed to read timer state: {e}");
+                                            None
+                                        }
+                                    }
+                                }
                             })
-                            .map(Message::StateChanged)
+                            .filter_map(std::future::ready)
                             .boxed(),
-                        Err(e) => {
-                            error!("Failed to watch service owner: {}", e);
+                        (changes, owners) => {
+                            error!(
+                                "Failed to subscribe to D-Bus state: {:?}, {:?}",
+                                changes.err(),
+                                owners.err()
+                            );
                             stream::pending().boxed()
                         }
                     }
@@ -410,42 +427,7 @@ impl cosmic::Application for AppModel {
             Subscription::none()
         };
 
-        let dbus_signals = if let Some(proxy) = &self.proxy {
-            let proxy = proxy.clone();
-            Subscription::run_with_id(
-                "dbus-signals",
-                stream::once(async move {
-                    info!("Subscribing to state signals...");
-                    match proxy.inner().receive_signal("StateChanged").await {
-                        Ok(stream) => {
-                            info!("Successfully subscribed to state signals");
-                            stream.boxed()
-                        }
-                        Err(e) => {
-                            error!("Failed to subscribe to signals: {}", e);
-                            stream::pending().boxed()
-                        }
-                    }
-                })
-                .flatten()
-                .filter_map(|change: zbus::Message| async move {
-                    match change.body().deserialize::<CaffeineState>() {
-                        Ok(state) => {
-                            info!("Received signal: {:?}", state);
-                            Some(Message::StateChanged(state))
-                        }
-                        Err(e) => {
-                            error!("Failed to parse signal body: {}", e);
-                            None
-                        }
-                    }
-                }),
-            )
-        } else {
-            Subscription::none()
-        };
-
-        Subscription::batch(vec![timer, dbus_signals, owner_changes])
+        Subscription::batch([timer, dbus])
     }
 
     fn style(&self) -> Option<cosmic::iced_runtime::Appearance> {
@@ -455,22 +437,12 @@ impl cosmic::Application for AppModel {
 
 impl AppModel {
     fn get_tooltip_text(&self) -> String {
-        if self.caffeine_state.is_active() {
-            if let Some(secs) = self.caffeine_state.remaining_secs() {
-                let hours = secs / 3600;
-                let mins = (secs % 3600) / 60;
-                if hours > 0 {
-                    format!("{}h {}m", hours, mins)
-                } else if mins > 0 {
-                    format!("{}m", mins)
-                } else {
-                    format!("{}s", secs)
-                }
-            } else {
-                "Active".to_string()
-            }
+        if let Some(secs) = self.caffeine_state.remaining_secs() {
+            format_remaining(secs)
+        } else if self.caffeine_state.is_active() {
+            fl!("tooltip-active")
         } else {
-            "Inactive".to_string()
+            fl!("tooltip-inactive")
         }
     }
 
@@ -490,56 +462,55 @@ impl AppModel {
     }
 }
 
+fn format_remaining(secs: u64) -> String {
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    if hours > 0 {
+        fl!(
+            "time-hours-minutes",
+            hours = (hours as f64),
+            mins = (mins as f64)
+        )
+    } else if mins > 0 {
+        fl!("time-minutes", mins = (mins as f64))
+    } else {
+        fl!("time-seconds", secs = (secs as f64))
+    }
+}
+
 fn build_popup_content(state: &AppModel) -> Element<'_, Message> {
     let spacing = theme::active().cosmic().spacing;
     let is_active = state.caffeine_state.is_active();
 
     let header = widget::text::heading(fl!("caffeine-mode"));
 
-    let status_text = if !state.caffeine_state.is_active() {
-        fl!("status-off")
-    } else {
-        let selection = state.caffeine_state.selection;
+    let status_text = if is_active {
+        let mode = state.caffeine_state.selection.label();
         if let Some(secs) = state.caffeine_state.remaining_secs() {
-            let hours = secs / 3600;
-            let mins = (secs % 3600) / 60;
-            let time_str = if hours > 0 {
-                format!("{}h {}m", hours, mins)
-            } else if mins > 0 {
-                format!("{}m", mins)
-            } else {
-                format!("{}s", secs)
-            };
-            format!("{} - {} remaining", selection.label(), time_str)
+            fl!(
+                "status-remaining",
+                mode = mode,
+                time = format_remaining(secs)
+            )
         } else {
-            format!("{} mode active", selection.label())
+            fl!("status-active", mode = mode)
         }
+    } else {
+        fl!("status-off")
     };
 
     let status_indicator = widget::text::caption(status_text);
 
-    let total_duration = state.caffeine_state.selection.duration_secs(
-        Some(state.manual_input.parse().unwrap_or(30) as u64),
-        Some(state.manual_hours_input.parse().unwrap_or(0) as u64),
-    );
-    let progress_bar = if is_active {
-        if let Some(total) = total_duration {
-            if let Some(remaining) = state.caffeine_state.remaining_secs() {
-                let progress = remaining as f32 / total as f32;
-                Some(
-                    widget::progress_bar(0.0..=1.0, progress)
-                        .height(Length::Fixed(4.0))
-                        .class(cosmic::theme::ProgressBar::Primary),
-                )
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let progress_bar = state
+        .caffeine_state
+        .remaining_secs()
+        .filter(|_| state.timer_duration > 0)
+        .map(|remaining| {
+            let progress = remaining.min(state.timer_duration) as f32 / state.timer_duration as f32;
+            widget::progress_bar(0.0..=1.0, progress)
+                .height(Length::Fixed(4.0))
+                .class(cosmic::theme::ProgressBar::Primary)
+        });
 
     let options = widget::column()
         .push(
@@ -623,16 +594,17 @@ fn build_popup_content(state: &AppModel) -> Element<'_, Message> {
         Message::SelectTimer,
     );
 
-    let manual_input = widget::text_input("Mins", &state.manual_input)
+    let manual_input = widget::text_input("", &state.manual_input)
+        .label(fl!("timer-minutes-label"))
         .on_input(Message::ManualInputChanged)
-        .width(Length::Fixed(60.0));
+        .width(Length::Fixed(76.0));
 
-    let manual_hours = widget::text_input("Hours", &state.manual_hours_input)
+    let manual_hours = widget::text_input("", &state.manual_hours_input)
+        .label(fl!("timer-hours-label"))
         .on_input(Message::ManualHoursChanged)
-        .width(Length::Fixed(60.0));
+        .width(Length::Fixed(76.0));
 
     let manual_row = widget::row()
-        .push(manual_radio)
         .push(manual_hours)
         .push(manual_input)
         .spacing(spacing.space_xs)
@@ -684,6 +656,7 @@ fn build_popup_content(state: &AppModel) -> Element<'_, Message> {
         .push(status_indicator)
         .push(widget::divider::horizontal::light())
         .push(options)
+        .push(manual_radio)
         .push(manual_row)
         .push(widget::divider::horizontal::light())
         .push(inhibit_options)

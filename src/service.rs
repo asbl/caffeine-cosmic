@@ -1,10 +1,11 @@
 use crate::backend::CaffeineBackend;
-use crate::config::{CaffeineConfig, InhibitMode};
+use crate::config::CaffeineConfig;
 use crate::notify;
 use crate::fl;
 use crate::state::{CaffeineState, TimerSelection};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::task::JoinHandle;
 use tracing::{error, info};
 use zbus::{interface, object_server::SignalEmitter, proxy};
 
@@ -16,11 +17,26 @@ pub const DBUS_INTERFACE: &str = "com.github.oussama_berchi.cosmic_caffeine.Mana
 pub struct CaffeineService {
     backend: CaffeineBackend,
     state: Arc<Mutex<CaffeineState>>,
+    /// Only the service runs the timer, so each notification is shown once
+    /// no matter how many panels show the applet.
+    timer: Option<Arc<AbortOnDrop>>,
+}
+
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl CaffeineService {
     pub fn new(backend: CaffeineBackend, state: Arc<Mutex<CaffeineState>>) -> Self {
-        Self { backend, state }
+        Self {
+            backend,
+            state,
+            timer: None,
+        }
     }
 }
 
@@ -69,6 +85,7 @@ impl CaffeineService {
         );
 
         let config = CaffeineConfig::load();
+        self.timer = None;
 
         let new_state = if active {
             let selection = idx_to_selection(selection_idx);
@@ -94,7 +111,9 @@ impl CaffeineService {
             if let Err(e) = self.backend.inhibit(&reason, inhibit_mode).await {
                 error!("Failed to inhibit via D-Bus: {}", e);
                 notify::notify_error(&e);
-                return Ok(());
+                // Any earlier lock has been released, so report inactive.
+                self.publish(CaffeineState::inactive(), &ctxt).await;
+                return Err(zbus::fdo::Error::Failed(e));
             }
 
             if let Some(secs) = duration {
@@ -106,27 +125,18 @@ impl CaffeineService {
                 notify::notify_enabled();
             }
 
+            if let Some(total) = duration {
+                self.start_timer(total, config.warning_mins, ctxt.to_owned());
+            }
+
             CaffeineState::active(selection, expiry_ts)
         } else {
-            if let Err(e) = self.backend.uninhibit().await {
-                error!("Failed to uninhibit via D-Bus: {}", e);
-                notify::notify_error(&e);
-            }
+            self.backend.uninhibit().await;
             notify::notify_disabled();
             CaffeineState::inactive()
         };
 
-        {
-            if let Ok(mut lock) = self.state.lock() {
-                *lock = new_state;
-            } else {
-                error!("Failed to acquire lock on state");
-            }
-        }
-
-        if let Err(e) = ctxt.emit(DBUS_INTERFACE, "StateChanged", &new_state).await {
-            error!("Failed to emit signal: {}", e);
-        }
+        self.publish(new_state, &ctxt).await;
         Ok(())
     }
 
@@ -137,5 +147,50 @@ impl CaffeineService {
             error!("Failed to acquire lock on state");
             CaffeineState::inactive()
         }
+    }
+}
+
+impl CaffeineService {
+    async fn publish(&self, new_state: CaffeineState, ctxt: &SignalEmitter<'_>) {
+        publish_state(&self.state, new_state, ctxt).await;
+    }
+
+    fn start_timer(&mut self, total: u64, warning_mins: u32, ctxt: SignalEmitter<'static>) {
+        let backend = self.backend.clone();
+        let state = self.state.clone();
+        let expiry = SystemTime::now() + Duration::from_secs(total);
+        let threshold = u64::from(warning_mins) * 60;
+        // No warning if the whole timer is shorter than the warning period.
+        let mut warned = threshold == 0 || total <= threshold;
+
+        let handle = tokio::spawn(async move {
+            // Compare against the wall clock: tokio's clock stops during suspend.
+            while let Ok(left) = expiry.duration_since(SystemTime::now()) {
+                if !warned && left.as_secs() <= threshold {
+                    warned = true;
+                    notify::notify_warning(warning_mins);
+                }
+                tokio::time::sleep(left.min(Duration::from_secs(1))).await;
+            }
+            info!("Timer expired, disabling caffeine");
+            backend.uninhibit().await;
+            notify::notify_timer_expired();
+            publish_state(&state, CaffeineState::inactive(), &ctxt).await;
+        });
+        self.timer = Some(Arc::new(AbortOnDrop(handle)));
+    }
+}
+
+async fn publish_state(
+    state: &Mutex<CaffeineState>,
+    new_state: CaffeineState,
+    ctxt: &SignalEmitter<'_>,
+) {
+    match state.lock() {
+        Ok(mut lock) => *lock = new_state,
+        Err(_) => error!("Failed to acquire lock on state"),
+    }
+    if let Err(e) = ctxt.emit(DBUS_INTERFACE, "StateChanged", &new_state).await {
+        error!("Failed to emit signal: {}", e);
     }
 }

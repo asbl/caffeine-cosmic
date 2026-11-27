@@ -5,7 +5,6 @@ use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::theme;
 use cosmic::widget;
 use cosmic::widget::MouseArea;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -14,31 +13,18 @@ use tracing::{error, info, warn};
 use crate::backend::CaffeineBackend;
 use crate::config::{CaffeineConfig, InhibitMode};
 use crate::fl;
-use crate::notify;
 use crate::service::{CaffeineManagerProxy, CaffeineService, DBUS_NAME, DBUS_PATH};
 use crate::state::{CaffeineState, TimerSelection};
 
 const ACTIVE_COLOR: Color = Color::from_rgb(0.698, 0.133, 0.133);
 
-const SYSTEM_ICON_PATH: &str =
-    "/usr/share/icons/hicolor/scalable/apps/oussama-berchi-caffeine-cosmic.svg";
-
-const DEV_ICON_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/oussama-berchi-caffeine-cosmic.svg"
-);
-
-fn get_icon_path() -> PathBuf {
-    let system_path = PathBuf::from(SYSTEM_ICON_PATH);
-    if system_path.exists() {
-        system_path
-    } else {
-        PathBuf::from(DEV_ICON_PATH)
-    }
-}
-
-static ICON_HANDLE: LazyLock<widget::icon::Handle> =
-    LazyLock::new(|| widget::icon::from_path(get_icon_path()).symbolic(true));
+// Embedded, so the panel icon does not depend on where the app was installed.
+static ICON_HANDLE: LazyLock<widget::icon::Handle> = LazyLock::new(|| {
+    widget::icon::from_svg_bytes(
+        include_bytes!("../assets/oussama-berchi-caffeine-cosmic.svg").as_slice(),
+    )
+    .symbolic(true)
+});
 
 pub struct AppModel {
     core: cosmic::Core,
@@ -51,7 +37,6 @@ pub struct AppModel {
     active_icon_style: cosmic::theme::Svg,
     is_hovered: bool,
     inhibit_mode: InhibitMode,
-    warning_issued: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +54,7 @@ pub enum Message {
     DBusReady(Option<CaffeineManagerProxy<'static>>),
     StateChanged(CaffeineState),
     SetInhibitMode(InhibitMode),
-    ClosePopup,
+    Noop,
 }
 
 impl cosmic::Application for AppModel {
@@ -115,7 +100,6 @@ impl cosmic::Application for AppModel {
             active_icon_style: active_style,
             is_hovered: false,
             inhibit_mode: config.inhibit_mode,
-            warning_issued: false,
         };
 
         let dbus_task = Task::perform(
@@ -128,22 +112,24 @@ impl cosmic::Application for AppModel {
                     }
                 };
 
-                match conn.request_name(DBUS_NAME).await {
-                    Ok(_) => {
-                        info!("Acquired D-Bus name: {}", DBUS_NAME);
-                        let backend = CaffeineBackend::new();
-                        let state = Arc::new(Mutex::new(CaffeineState::inactive()));
-                        let service = CaffeineService::new(backend, state);
-                        if let Err(e) = conn.object_server().at(DBUS_PATH, service).await {
-                            error!("Failed to serve object: {}", e);
-                        }
-                    }
-                    Err(_) => {
-                        info!("D-Bus name already taken, acting as client");
+                // Every instance serves the object and queues for the name, so
+                // the bus promotes the next one when the current owner exits.
+                let state = Arc::new(Mutex::new(CaffeineState::inactive()));
+                let service = CaffeineService::new(CaffeineBackend::new(), state);
+                if let Err(e) = conn.object_server().at(DBUS_PATH, service).await {
+                    error!("Failed to serve object: {}", e);
+                    return None;
+                }
+                match conn
+                    .request_name_with_flags(DBUS_NAME, Default::default())
+                    .await
+                {
+                    Ok(reply) => info!("D-Bus name {}: {:?}", DBUS_NAME, reply),
+                    Err(e) => {
+                        error!("Failed to request D-Bus name: {}", e);
+                        return None;
                     }
                 }
-
-                tokio::time::sleep(Duration::from_millis(100)).await;
 
                 match CaffeineManagerProxy::builder(&conn)
                     .path(DBUS_PATH)
@@ -257,7 +243,7 @@ impl cosmic::Application for AppModel {
                                 Ok(state) => Message::StateChanged(state),
                                 Err(e) => {
                                     error!("Failed to get initial state: {}", e);
-                                    Message::Hover(false)
+                                    Message::Noop
                                 }
                             }
                         },
@@ -315,7 +301,7 @@ impl cosmic::Application for AppModel {
                             if let Err(e) = proxy.set_state(active, idx, mins).await {
                                 error!("Failed to set state via D-Bus: {}", e);
                             }
-                            Message::Hover(false)
+                            Message::Noop
                         },
                         cosmic::Action::App,
                     );
@@ -327,29 +313,10 @@ impl cosmic::Application for AppModel {
             Message::StateChanged(new_state) => {
                 info!("State synced from D-Bus: {:?}", new_state);
                 self.caffeine_state = new_state;
-                self.warning_issued = false;
             }
 
-            Message::TimerTick => {
-                if let Some(remaining) = self.caffeine_state.remaining_secs() {
-                    if remaining == 0 && self.caffeine_state.is_active() {
-                        info!("Timer expired, disabling caffeine");
-                        notify::notify_timer_expired();
-                        return Task::done(cosmic::Action::App(Message::SetState(false)));
-                    }
-
-                    let config = CaffeineConfig::load();
-                    let warning_threshold = (config.warning_mins as u64) * 60;
-                    if remaining <= warning_threshold
-                        && remaining > 0
-                        && !self.warning_issued
-                        && config.warning_mins > 0
-                    {
-                        self.warning_issued = true;
-                        notify::notify_warning(config.warning_mins);
-                    }
-                }
-            }
+            // Only redraws the remaining time; the service handles expiry.
+            Message::TimerTick | Message::Noop => {}
 
             Message::PopupClosed(id) => {
                 if self.popup.as_ref() == Some(&id) {
@@ -400,12 +367,6 @@ impl cosmic::Application for AppModel {
                 self.inhibit_mode = mode;
                 self.save_config();
             }
-
-            Message::ClosePopup => {
-                if let Some(id) = self.popup {
-                    return Task::done(cosmic::Action::App(Message::Surface(destroy_popup(id))));
-                }
-            }
         }
         Task::none()
     }
@@ -418,6 +379,32 @@ impl cosmic::Application for AppModel {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     Some((Message::TimerTick, ()))
                 }),
+            )
+        } else {
+            Subscription::none()
+        };
+
+        // After a handover the new owner starts inactive: fetch its state.
+        let owner_changes = if let Some(proxy) = &self.proxy {
+            let proxy = proxy.clone();
+            Subscription::run_with_id(
+                "dbus-owner",
+                stream::once(async move {
+                    match proxy.inner().receive_owner_changed().await {
+                        Ok(changes) => changes
+                            .filter_map(move |_| {
+                                let proxy = proxy.clone();
+                                async move { proxy.get_state().await.ok() }
+                            })
+                            .map(Message::StateChanged)
+                            .boxed(),
+                        Err(e) => {
+                            error!("Failed to watch service owner: {}", e);
+                            stream::pending().boxed()
+                        }
+                    }
+                })
+                .flatten(),
             )
         } else {
             Subscription::none()
@@ -458,7 +445,7 @@ impl cosmic::Application for AppModel {
             Subscription::none()
         };
 
-        Subscription::batch(vec![timer, dbus_signals])
+        Subscription::batch(vec![timer, dbus_signals, owner_changes])
     }
 
     fn style(&self) -> Option<cosmic::iced_runtime::Appearance> {
@@ -681,10 +668,6 @@ fn build_popup_content(state: &AppModel) -> Element<'_, Message> {
                 }),
         )
         .spacing(spacing.space_xs);
-
-    let close_button = widget::button::destructive(fl!("stop-caffeine"))
-        .on_press(Message::ClosePopup)
-        .width(Length::Fill);
 
     let action_button = if is_active {
         widget::button::destructive(fl!("stop-caffeine"))

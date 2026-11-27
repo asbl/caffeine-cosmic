@@ -1,107 +1,96 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 use ashpd::desktop::inhibit::{InhibitFlags, InhibitProxy};
 use ashpd::desktop::Request;
-use ashpd::enumflags2::{make_bitflags, BitFlags};
+use ashpd::enumflags2::make_bitflags;
+use zbus::zvariant::OwnedFd;
 
 use crate::config::InhibitMode;
 
-#[derive(Clone)]
+/// Idle is inhibited through the XDG portal. Suspend goes to logind directly,
+/// because portal backends such as the GTK one (used on COSMIC) only support
+/// idle inhibition.
+#[zbus::proxy(
+    interface = "org.freedesktop.login1.Manager",
+    default_service = "org.freedesktop.login1",
+    default_path = "/org/freedesktop/login1"
+)]
+trait Login1Manager {
+    fn inhibit(&self, what: &str, who: &str, why: &str, mode: &str) -> zbus::Result<OwnedFd>;
+}
+
+#[derive(Clone, Default)]
 pub struct CaffeineBackend {
     state: Arc<Mutex<BackendState>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct BackendState {
-    inhibit_handle: Option<Request<()>>,
+    idle: Option<Request<()>>,
+    /// logind releases the lock as soon as this descriptor is closed.
+    sleep: Option<OwnedFd>,
 }
 
 impl CaffeineBackend {
     pub fn new() -> Self {
-        info!("CaffeineBackend initialized");
-        Self {
-            state: Arc::new(Mutex::new(BackendState::default())),
-        }
+        Self::default()
     }
 
-    fn get_inhibit_flags(mode: InhibitMode) -> BitFlags<InhibitFlags> {
-        match mode {
-            InhibitMode::Idle => make_bitflags!(InhibitFlags::{Idle}),
-            InhibitMode::Suspend => make_bitflags!(InhibitFlags::{Suspend}),
-            InhibitMode::Both => make_bitflags!(InhibitFlags::{Idle | Suspend}),
-        }
-    }
-
+    /// Replaces any active inhibition. Either every lock required by `mode`
+    /// is taken, or none is.
     pub async fn inhibit(&self, reason: &str, mode: InhibitMode) -> Result<(), String> {
-        info!(
-            "Attempting to inhibit via XDG portal, reason: {}, mode: {:?}",
-            reason,
-            mode
-        );
-
-        {
-            let state = self.state.lock().await;
-            if state.inhibit_handle.is_some() {
-                warn!("Already inhibiting, skipping duplicate request");
-                return Ok(());
-            }
-        }
-
-        let proxy = InhibitProxy::new().await.map_err(|e| {
-            let msg = format!("Failed to create InhibitProxy: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
-
-        debug!("InhibitProxy created successfully");
-
-        let flags = Self::get_inhibit_flags(mode);
-        let request = proxy
-            .inhibit(None, flags, reason)
-            .await
-            .map_err(|e| {
-                let msg = format!("Failed to call inhibit: {}", e);
-                error!("{}", msg);
-                debug!("D-Bus error details: {:?}", e);
-                msg
-            })?;
-
-        debug!("Inhibit request successful, handle obtained");
-        info!("Screen inhibition activated successfully");
-
         let mut state = self.state.lock().await;
-        state.inhibit_handle = Some(request);
+        Self::release(&mut state).await;
 
+        let sleep = if matches!(mode, InhibitMode::Suspend | InhibitMode::Both) {
+            Some(Self::inhibit_sleep(reason).await?)
+        } else {
+            None
+        };
+        let idle = if matches!(mode, InhibitMode::Idle | InhibitMode::Both) {
+            Some(Self::inhibit_idle(reason).await?)
+        } else {
+            None
+        };
+
+        *state = BackendState { idle, sleep };
+        info!("Inhibition active, mode: {:?}", mode);
         Ok(())
     }
 
-    pub async fn uninhibit(&self) -> Result<(), String> {
-        info!("Attempting to uninhibit (release idle lock)");
+    pub async fn uninhibit(&self) {
+        Self::release(&mut *self.state.lock().await).await;
+    }
 
-        let mut state = self.state.lock().await;
-
-        if let Some(handle) = state.inhibit_handle.take() {
-            debug!("Closing inhibit handle");
-            handle.close().await.map_err(|e| {
-                let msg = format!("Failed to close inhibit handle: {}", e);
-                error!("{}", msg);
-                debug!("D-Bus error details: {:?}", e);
-                msg
-            })?;
-
-            info!("Screen idle inhibition released successfully");
-            Ok(())
-        } else {
-            warn!("No active inhibition to release");
-            Ok(())
+    async fn release(state: &mut BackendState) {
+        state.sleep = None;
+        if let Some(request) = state.idle.take() {
+            if let Err(e) = request.close().await {
+                warn!("Failed to close portal request: {}", e);
+            }
         }
     }
-}
 
-impl Drop for CaffeineBackend {
-    fn drop(&mut self) {
-        debug!("CaffeineBackend dropped");
+    async fn inhibit_idle(reason: &str) -> Result<Request<()>, String> {
+        let error = |e: ashpd::Error| format!("Failed to inhibit idle: {e}");
+        let proxy = InhibitProxy::new().await.map_err(error)?;
+        let request = proxy
+            .inhibit(None, make_bitflags!(InhibitFlags::{Idle}), reason)
+            .await
+            .map_err(error)?;
+        request.response().map_err(error)?;
+        Ok(request)
+    }
+
+    async fn inhibit_sleep(reason: &str) -> Result<OwnedFd, String> {
+        let error = |e: zbus::Error| format!("Failed to inhibit suspend: {e}");
+        let connection = zbus::Connection::system().await.map_err(error)?;
+        let proxy = Login1ManagerProxy::new(&connection).await.map_err(error)?;
+        proxy
+            .inhibit("sleep", "Caffeine", reason, "block")
+            .await
+            .map_err(error)
     }
 }

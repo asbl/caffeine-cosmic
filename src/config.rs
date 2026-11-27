@@ -11,17 +11,8 @@ pub enum InhibitMode {
     Both,
 }
 
-impl InhibitMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            InhibitMode::Idle => "Idle only",
-            InhibitMode::Suspend => "Suspend only",
-            InhibitMode::Both => "Idle + Suspend",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CaffeineConfig {
     pub last_timer: TimerSelection,
     pub manual_mins: u32,

@@ -1,6 +1,5 @@
 use notify_rust::{Notification, Urgency};
 use std::thread;
-use std::time::Duration;
 use tracing::{debug, warn};
 
 use crate::config::CaffeineConfig;
@@ -21,7 +20,7 @@ fn show_notification(title: &str, body: &str, urgency: Urgency, timeout: i32) {
             .appname("Caffeine")
             .summary(&title)
             .body(&body)
-            .icon("caffeine")
+            .icon("oussama-berchi-caffeine-cosmic")
             .hint(notify_rust::Hint::DesktopEntry(APP_ID.to_string()))
             .urgency(urgency)
             .timeout(timeout)
@@ -73,12 +72,4 @@ pub fn notify_error(details: &str) {
     let title = fl!("notification-error-title");
     let body = format!("{} {}", fl!("notification-error-body"), details);
     show_notification(&title, &body, Urgency::Normal, 5000);
-}
-
-pub fn schedule_warning(warning_mins: u32) {
-    let warning_mins = warning_mins;
-    thread::spawn(move || {
-        thread::sleep(Duration::from_secs(60));
-        notify_warning(warning_mins);
-    });
 }

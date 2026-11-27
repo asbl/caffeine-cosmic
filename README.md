@@ -216,7 +216,7 @@ Run `just --list` to see all available commands:
 ### Caffeine doesn't prevent sleep
 
 - Make sure you're running on COSMIC Desktop
-- The applet uses the XDG Desktop Portal for inhibiting sleep
+- The applet uses the XDG Desktop Portal for idle and logind for suspend (check with `systemd-inhibit --list`)
 - Check if the portal is running: `systemctl --user status xdg-desktop-portal`
 
 ### Error messages in terminal
@@ -228,10 +228,10 @@ just run-debug
 
 ## How It Works
 
-Caffeine uses the **XDG Desktop Portal** (specifically the Inhibit portal) to request that the system not enter idle state. This is the standard, secure way to prevent sleep on modern Linux desktops.
+Caffeine uses the **XDG Desktop Portal** (Inhibit portal) to keep the session from going idle. To block suspend it takes a lock from **systemd-logind**, because the portal backend used on COSMIC only supports idle inhibition.
 
 The applet communicates via **D-Bus** to:
-1. Register an "inhibit" request with the desktop portal
+1. Register inhibit requests with the desktop portal and logind
 2. Sync state across multiple instances of the applet
 3. Automatically release the inhibit when stopped or when timer expires
 

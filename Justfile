@@ -11,6 +11,7 @@ icons_dir := share_dir / "icons/hicolor/scalable/apps"
 # Local user installation paths
 local_bin := env_var("HOME") / ".local/bin"
 local_apps := env_var("HOME") / ".local/share/applications"
+local_icons := env_var("HOME") / ".local/share/icons/hicolor/scalable/apps"
 
 # Application metadata
 app_name := "cosmic-caffeine"
@@ -24,7 +25,7 @@ default:
 # Build the project in release mode
 build:
     @echo "Building cosmic-caffeine..."
-    cargo build --release
+    cargo build --release --locked
     @echo "Build complete! Binary located at: target/release/{{app_name}}"
 
 # Build in debug mode for development
@@ -71,10 +72,7 @@ install-local: build
     @echo "Installing desktop entry to {{local_apps}}/{{desktop_file}}..."
     install -Dm644 assets/{{desktop_file}} {{local_apps}}/{{desktop_file}}
     @echo ""
-    @echo "NOTE: Icon will be installed system-wide (requires sudo)..."
-    sudo mkdir -p {{icons_dir}}
-    sudo install -Dm644 assets/{{icon_file}} {{icons_dir}}/{{icon_file}}
-    -sudo gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+    install -Dm644 assets/{{icon_file}} {{local_icons}}/{{icon_file}}
     @echo ""
     @echo "Updating desktop database..."
     -update-desktop-database {{local_apps}} 2>/dev/null || true
@@ -121,10 +119,7 @@ uninstall-local:
     @echo "Removing desktop entry..."
     -rm -f {{local_apps}}/{{desktop_file}}
     @echo "Removing icon..."
-    -sudo rm -f {{icons_dir}}/{{icon_file}}
-    @echo ""
-    @echo "Updating icon cache..."
-    -sudo gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+    -rm -f {{local_icons}}/{{icon_file}}
     @echo ""
     @echo "======================================================"
     @echo "Uninstallation complete!"
